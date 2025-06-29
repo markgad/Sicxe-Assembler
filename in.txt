@@ -1,0 +1,17 @@
+1     COPY     START    1000
+2     FIRST    STL      RETADR
+3     CLOOP    JSUB     RDREC
+4              +LDA      LENGTH
+5              COMP     ZERO
+6              JEQ      ENDFIL
+7              JSUB     WRREC
+8              J        CLOOP
+9              ADDR      R1,R2
+10     ENDFIL   LDA      EOF
+11             STA      BUFFER
+12             RSUB
+13    RETADR   RESW     1
+14    LENGTH   RESB     1
+15    EOF      BYTE     C'EOF'
+16    BUFFER   RESB     4096
+17             END      FIRST

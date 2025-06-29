@@ -1,0 +1,440 @@
+import java.io.*;
+import java.util.*;
+
+
+public class Pass2 {
+
+    static Map<String, String> opcodeTable = new HashMap<>();
+    static Map<String, Integer> symbolTable = new HashMap<>();
+    static List<String> modificationRecords = new ArrayList<>();
+    static int baseRegister = 0;
+
+    static Map<String, Integer> opcodeFormat = new HashMap<>();
+
+    static void initOpcodeFormat() {
+        opcodeFormat.put("FIX", 1);
+        opcodeFormat.put("FLOAT", 1);
+        opcodeFormat.put("HIO", 1);
+        opcodeFormat.put("NORM", 1);
+        opcodeFormat.put("SIO", 1);
+        opcodeFormat.put("TIO", 1);
+
+        opcodeFormat.put("ADDR", 2);
+        opcodeFormat.put("CLEAR", 2);
+        opcodeFormat.put("COMPR", 2);
+        opcodeFormat.put("DIVR", 2);
+        opcodeFormat.put("MULR", 2);
+        opcodeFormat.put("RMO", 2);
+        opcodeFormat.put("SHIFTL", 2);
+        opcodeFormat.put("SHIFTR", 2);
+        opcodeFormat.put("SUBR", 2);
+        opcodeFormat.put("SVC", 2);
+        opcodeFormat.put("TIXR", 2);
+    }
+
+    static boolean isDirective(String op) {
+        return op.equals("RESW") || op.equals("RESB") || op.equals("BASE") ||
+                op.equals("START") || op.equals("END") || op.equals("WORD") || op.equals("BYTE");
+    }
+
+    public static void main(String[] args) {
+        initOpcodeTable();
+        initOpcodeFormat();
+        loadSymbolTable();
+
+        List<LineRecord> records = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(new FileReader("out_pass1.txt"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String[] parts = line.split("\t", 2);
+                if (parts.length < 2) continue;
+                String loc = parts[0].trim();
+                String instruction = parts[1].trim();
+
+                String label = "", op = "", operand = "";
+
+                String[] tokens = instruction.trim().split("\\s+", 4);
+                if (tokens.length == 4) {
+                    label = tokens[0];
+                    op = tokens[1];
+                    operand = tokens[2] + " " + tokens[3]; // For BYTE C'EOF' etc.
+                } else if (tokens.length == 3) {
+                    label = tokens[0];
+                    op = tokens[1];
+                    operand = tokens[2];
+                } else if (tokens.length == 2) {
+                    op = tokens[0];
+                    operand = tokens[1];
+                } else if (tokens.length == 1) {
+                    op = tokens[0];
+                }
+
+
+                op = op.trim().toUpperCase();
+                operand = operand.trim();
+
+                if (op.equals("BASE") && symbolTable.containsKey(operand)) {
+                    baseRegister = symbolTable.get(operand);
+                    System.out.println("BASE set to " + operand + " = " + baseRegister);
+                    continue;
+                }
+
+                String objCode = computeObjectCode(loc, label, op, operand);
+                records.add(new LineRecord(loc, label, op, operand, objCode, instruction));
+            }
+        } catch (IOException e) {
+            System.err.println("Error reading out_pass1.txt: " + e.getMessage());
+        }
+
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter("out_pass2.txt"))) {
+            for (LineRecord rec : records) {
+                writer.write(rec.loc + "\t" + rec.instruction + "\t" + rec.objectCode);
+                writer.newLine();
+            }
+        } catch (IOException e) {
+            System.err.println("Error writing out_pass2.txt: " + e.getMessage());
+        }
+
+        generateHTME(records);
+    }
+
+    static class LineRecord {
+        String loc, label, op, operand, objectCode, instruction;
+
+        LineRecord(String loc, String label, String op, String operand, String objectCode, String instruction) {
+            this.loc = loc;
+            this.label = label;
+            this.op = op;
+            this.operand = operand;
+            this.objectCode = objectCode;
+            this.instruction = instruction;
+        }
+    }
+
+    static String computeObjectCode(String loc, String label, String op, String operand) {
+
+        op = op.trim().toUpperCase();
+        operand = operand.trim();
+
+        boolean isFormat4 = false;
+        boolean isFormat3F = false;
+
+        if (op.startsWith("+")) {
+            isFormat4 = true;
+            op = op.substring(1);
+        } else if (op.startsWith("&")) {
+            isFormat3F = true;
+            op = op.substring(1);
+        }
+
+        if (op.equals("START") || op.equals("END") || op.equals("BASE") ||
+                op.equals("RESW") || op.equals("RESB"))
+            return "";
+
+        if (op.equals("RSUB"))
+            return "4F0000";
+
+        if (op.equals("WORD")) {
+            return Arrays.stream(operand.split(","))
+                    .map(val -> String.format("%06X", Integer.parseInt(val.trim())))
+                    .reduce("", String::concat);
+        }
+
+        if (op.equals("BYTE")) {
+            if (operand.startsWith("C'"))
+                return operand.substring(2, operand.length() - 1).chars()
+                        .mapToObj(c -> String.format("%02X", c))
+                        .reduce("", String::concat);
+            if (operand.startsWith("X'"))
+                return operand.substring(2, operand.length() - 1);
+            return "";
+        }
+
+
+
+
+
+
+
+
+        String opcodeHex = opcodeTable.getOrDefault(op.toUpperCase(), "00");
+        if (opcodeHex.equals("00") && !isDirective(op)) {
+            System.err.println("Unrecognized opcode: " + op);
+            return "";
+        }
+
+
+
+        Integer format = opcodeFormat.get(op.toUpperCase());
+        if (format != null) {
+            int opVal = Integer.parseInt(opcodeHex, 16);
+            if (format == 1)
+                return String.format("%02X", opVal);
+            if (format == 2) {
+                String[] regs = operand.split(",");
+                int r1 = getRegisterNumber(regs[0].trim());
+                int r2 = regs.length > 1 ? getRegisterNumber(regs[1].trim()) : 0;
+                return String.format("%02X%01X%01X", opVal, r1, r2);
+            }
+        }
+
+        int n = 1, i = 1, x = 0, b = 0, p = 0, e = 0, disp = 0;
+        boolean immediateConstant = false;
+
+
+        if (isFormat3F) {
+            int opVal = Integer.parseInt(opcodeHex, 16);
+            int f1 = (disp % 2 == 0) ? 1 : 0;
+            int f2 = (disp >= 0) ? 1 : 0;
+            int f3 = (disp == 0 && b == 1) ? 1 : 0;
+
+            int firstByte = (opVal & 0xFC) | (f1 << 1) | f2;
+            int flags = (x << 3) | (b << 2) | (p << 1) | f3;
+            int secondByte = (flags << 4) | ((disp >> 8) & 0xF);
+            int thirdByte = disp & 0xFF;
+            return String.format("%02X%02X%02X", firstByte, secondByte, thirdByte);
+        }
+
+
+        if (operand.startsWith("#")) {
+            n = 0; i = 1;
+            operand = operand.substring(1).trim();
+            try {
+                disp = Integer.parseInt(operand);
+                immediateConstant = true;
+            } catch (NumberFormatException ex) {
+                disp = symbolTable.getOrDefault(operand, 0);
+            }
+        } else if (operand.startsWith("@")) {
+            n = 1; i = 0;
+            operand = operand.substring(1).trim();
+            disp = symbolTable.getOrDefault(operand, 0);
+        } else {
+            if (operand.endsWith(",X")) {
+                x = 1;
+                operand = operand.replace(",X", "").trim();
+            }
+            try {
+                disp = Integer.parseInt(operand);
+                immediateConstant = true;
+            } catch (NumberFormatException ex) {
+                disp = symbolTable.getOrDefault(operand, 0);
+            }
+        }
+
+        int locInt = Integer.parseInt(loc, 16);
+
+        if (!immediateConstant && !isFormat4) {
+            int pc = locInt + 3;
+            int rel = disp - pc;
+            if (rel >= -2048 && rel <= 2047) {
+                disp = rel & 0xFFF;
+                p = 1; b = 0;
+            } else {
+                int base = getBaseRegister();
+                int baseRel = disp - base;
+                if (baseRel >= 0 && baseRel <= 4095) {
+                    disp = baseRel & 0xFFF;
+                    b = 1; p = 0;
+                } else {
+                    System.err.println("Cannot encode address in format 3: " + operand);
+                }
+            }
+        } else if (!immediateConstant && !isFormat4) {
+            disp = disp & 0xFFF;
+            p = 1; b = 0;
+        }
+
+        if (!isFormat4) {
+            int opVal = Integer.parseInt(opcodeHex, 16);
+            int firstByte = (opVal & 0xFC) | (n << 1) | i;
+            int flags = (x << 3) | (b << 2) | (p << 1) | e;
+            int secondByte = (flags << 4) | ((disp >> 8) & 0xF);
+            int thirdByte = disp & 0xFF;
+            return String.format("%02X%02X%02X", firstByte, secondByte, thirdByte);
+        } else {
+            e = 1; p = 0; b = 0;
+            int opVal = Integer.parseInt(opcodeHex, 16);
+            int firstByte = (opVal & 0xFC) | (n << 1) | i;
+            int xbpe = (x << 3) | (b << 2) | (p << 1) | e;
+            if (isFormat4 && !immediateConstant) {
+                modificationRecords.add(String.format("M%04X05", locInt + 1));
+            }
+
+            return String.format("%02X%01X%05X", firstByte, xbpe, disp & 0xFFFFF);
+        }
+
+    }
+
+     static void generateHTME(List<LineRecord> records) {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter("HTME.txt"))) {
+            String progName = "PROG";
+            String startAddr = records.get(0).loc;
+            String endAddr = records.get(records.size() - 1).loc;
+
+            // Try to find the program name from the START directive
+            for (LineRecord rec : records) {
+                if (rec.op.equalsIgnoreCase("START") && !rec.label.isEmpty()) {
+                    progName = rec.label.toUpperCase();
+                    break;
+                }
+            }
+
+            if (progName.length() < 6) {
+                progName = String.format("%-6s", progName).replace(' ', 'X');
+            } else if (progName.length() > 6) {
+                progName = progName.substring(0, 6);
+            }
+
+            writer.write(String.format("H^%s^%06X^%06X\n", progName, Integer.parseInt(startAddr, 16), Integer.parseInt(endAddr, 16)));
+
+            StringBuilder currentRecord = new StringBuilder();
+            int recordStart = -1;
+            int currentLength = 0;
+
+            for (LineRecord rec : records) {
+                if (rec.op.equals("RESW") || rec.op.equals("RESB")) {
+                    if (currentLength > 0) {
+                        writer.write(String.format("T^%06X^%02X%s\n", recordStart, currentLength, currentRecord.toString()));
+                        currentRecord = new StringBuilder();
+                        currentLength = 0;
+                        recordStart = -1;
+                    }
+                    continue;
+                }
+
+                if (rec.objectCode.isEmpty()) continue;
+
+                if (recordStart == -1) {
+                    recordStart = Integer.parseInt(rec.loc, 16);
+                }
+
+                int objSize = rec.objectCode.length() / 2;
+                if ((currentLength + objSize) > 30) {
+                    writer.write(String.format("T^%06X^%02X%s\n", recordStart, currentLength, currentRecord.toString()));
+                    currentRecord = new StringBuilder();
+                    recordStart = Integer.parseInt(rec.loc, 16);
+                    currentLength = 0;
+                }
+
+                currentRecord.append("^").append(rec.objectCode);
+                currentLength += objSize;
+            }
+
+            if (currentLength > 0) {
+                writer.write(String.format("T^%06X^%02X%s\n", recordStart, currentLength, currentRecord.toString()));
+            }
+
+            for (String mod : modificationRecords) {
+                writer.write(mod + "\n");
+            }
+
+            writer.write("E^" + String.format("%06X", Integer.parseInt(startAddr, 16)));
+        } catch (IOException e) {
+            System.err.println("HTME generation failed: " + e.getMessage());
+        }
+    }
+
+
+
+
+    static void loadSymbolTable() {
+        try (BufferedReader reader = new BufferedReader(new FileReader("symbTable.txt"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String[] parts = line.trim().split("\\s+");
+                if (parts.length >= 2)
+                    symbolTable.put(parts[0], Integer.parseInt(parts[1], 16));
+            }
+        } catch (IOException e) {
+            System.err.println("Failed to load symbol table: " + e.getMessage());
+        }
+    }
+
+    static void initOpcodeTable() {
+        opcodeTable.put("ADD", "18");
+        opcodeTable.put("ADDF", "58");
+        opcodeTable.put("ADDR", "90");
+        opcodeTable.put("AND", "40");
+        opcodeTable.put("CLEAR", "B4");
+        opcodeTable.put("COMP", "28");
+        opcodeTable.put("COMPF", "88");
+        opcodeTable.put("COMPR", "A0");
+        opcodeTable.put("DIV", "24");
+        opcodeTable.put("DIVF", "64");
+        opcodeTable.put("DIVR", "9C");
+        opcodeTable.put("FIX", "C4");
+        opcodeTable.put("FLOAT", "C0");
+        opcodeTable.put("HIO", "F4");
+        opcodeTable.put("J", "3C");
+        opcodeTable.put("JEQ", "30");
+        opcodeTable.put("JGT", "34");
+        opcodeTable.put("JLT", "38");
+        opcodeTable.put("JSUB", "48");
+        opcodeTable.put("LDA", "00");
+        opcodeTable.put("LDB", "68");
+        opcodeTable.put("LDCH", "50");
+        opcodeTable.put("LDF", "70");
+        opcodeTable.put("LDL", "08");
+        opcodeTable.put("LDS", "6C");
+        opcodeTable.put("LDT", "74");
+        opcodeTable.put("LDX", "04");
+        opcodeTable.put("LPS", "D0");
+        opcodeTable.put("MUL", "20");
+        opcodeTable.put("MULF", "60");
+        opcodeTable.put("MULR", "98");
+        opcodeTable.put("NORM", "C8");
+        opcodeTable.put("OR", "44");
+        opcodeTable.put("RD", "D8");
+        opcodeTable.put("RMO", "AC");
+        opcodeTable.put("RSUB", "4C");
+        opcodeTable.put("SHIFTL", "A4");
+        opcodeTable.put("SHIFTR", "A8");
+        opcodeTable.put("SIO", "F0");
+        opcodeTable.put("SSK", "EC");
+        opcodeTable.put("STA", "0C");
+        opcodeTable.put("STB", "78");
+        opcodeTable.put("STCH", "54");
+        opcodeTable.put("STF", "80");
+        opcodeTable.put("STI", "D4");
+        opcodeTable.put("STL", "14");
+        opcodeTable.put("STS", "7C");
+        opcodeTable.put("STSW", "E8");
+        opcodeTable.put("STT", "84");
+        opcodeTable.put("STX", "10");
+        opcodeTable.put("SUB", "1C");
+        opcodeTable.put("SUBF", "5C");
+        opcodeTable.put("SUBR", "94");
+        opcodeTable.put("SVC", "B0");
+        opcodeTable.put("TD", "E0");
+        opcodeTable.put("TIO", "F8");
+        opcodeTable.put("TIX", "2C");
+        opcodeTable.put("TIXR", "B8");
+        opcodeTable.put("WD", "DC");
+    }
+
+    static boolean isOperation(String token) {
+        return opcodeTable.containsKey(token.toUpperCase());
+    }
+
+    static int getRegisterNumber(String reg) {
+        switch (reg.toUpperCase()) {
+            case "A": return 0;
+            case "X": return 1;
+            case "L": return 2;
+            case "B": return 3;
+            case "S": return 4;
+            case "T": return 5;
+            case "F": return 6;
+            case "PC": return 8;
+            case "SW": return 9;
+            default: return 0;
+        }
+    }
+
+    static int getBaseRegister() {
+        return baseRegister;
+    }
+}
+
+

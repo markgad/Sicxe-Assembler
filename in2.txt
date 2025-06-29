@@ -1,0 +1,20 @@
+
+SUM      START     0000
+         LDX       #0
+         LDA       #0
+         +LDB      #TABLE2
+         BASE      TABLE2
+;DAJSDAD
+LOOP     ADD       TABLE,X
+         ADD       TABLE2,X
+         TIX       COUNT
+         JLT       LOOP
+         +STA      TOTAL
+         &LDA      TABLE
+         RSUB
+;;REJADAA
+COUNT    RESW      1
+TABLE    RESW      2000 ;SAJDNADA
+TABLE2   RESW      2000
+TOTAL    RESW      1
+         END       SUM
